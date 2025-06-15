@@ -1,69 +1,46 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import requests
+from flask import Flask, request, jsonify
+import openai
+import os
+from flask_cors import CORS
 
-app = FastAPI()
+app = Flask(__name__)
+CORS(app)
 
-# ✅ Enable CORS so your frontend can connect
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Optional: restrict to your domain for security
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.route("/command", methods=["POST"])
+def command():
+    data = request.get_json()
+    prompt = data.get("prompt", "")
+    key = data.get("key", "")
+    
+    if not prompt or not key:
+        return jsonify({"response": "Missing prompt or key", "command": ""})
 
-@app.post("/command")
-async def process_command(req: Request):
     try:
-        body = await req.json()
-        prompt = body.get("prompt", "").strip()
-        key = body.get("key", "").strip()
-
-        if not prompt or not key:
-            return {"response": "❌ Missing prompt or key."}
-
-        # 🔁 Send to OpenRouter (GPT 3.5)
-        res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "openai/gpt-3.5-turbo",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are Manager AI, a powerful assistant that responds helpfully and can return JavaScript commands in this format:\n```js\n/* some code here */\n```"
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
+        # Call OpenRouter (OpenAI-compatible API)
+        response = openai.ChatCompletion.create(
+            model="openai/gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are Manager AI, an assistant that responds to prompts and can return JavaScript commands to run in a dashboard UI."},
+                {"role": "user", "content": prompt}
+            ],
+            api_key=key,
         )
 
-        data = res.json()
-        text = data["choices"][0]["message"]["content"]
+        content = response.choices[0].message.content
 
-        # ✂️ Extract any JS code between ```js ... ```
-        import re
-        match = re.search(r"```js\n(.*?)```", text, re.DOTALL)
-        js_code = match.group(1) if match else None
+        # If Manager AI includes code in a ```js block, extract it
+        command = ""
+        if "```js" in content:
+            start = content.find("```js") + 5
+            end = content.find("```", start)
+            command = content[start:end].strip()
 
-        return {
-            "response": text,
-            "command": js_code
-        }
-
+        return jsonify({
+            "response": content,
+            "command": command
+        })
     except Exception as e:
-        return {"response": f"⚠️ Error: {str(e)}"}
+        return jsonify({"response": f"Error: {str(e)}", "command": ""})
 
-# 🚀 Run the app (Render auto-detects PORT)
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    app.run(debug=True)
